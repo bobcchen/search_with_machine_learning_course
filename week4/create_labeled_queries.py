@@ -22,6 +22,7 @@ general.add_argument("--output", default=output_file_name, help="the file to out
 args = parser.parse_args()
 output_file_name = args.output
 
+min_queries = 1
 if args.min_queries:
     min_queries = int(args.min_queries)
 
@@ -51,11 +52,19 @@ df = df[df['category'].isin(categories)]
 # IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
 
 # IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
+category_counts = df['category'].value_counts()
+while category_counts.min() < min_queries:
+    for category, count in df['category'].value_counts().iteritems():
+        if count < min_queries and category != root_category_id:
+            parent = parents_df.loc[parents_df['category']==category]['parent'].values[0]
+            df.loc[df['category']==category, 'category'] = parent
+    category_counts = df['category'].value_counts()
 
 # Create labels in fastText format.
 df['label'] = '__label__' + df['category']
 
 # Output labeled query data as a space-separated file, making sure that every category is in the taxonomy.
 df = df[df['category'].isin(categories)]
+print(df['category'].value_counts())
 df['output'] = df['label'] + ' ' + df['query']
 df[['output']].to_csv(output_file_name, header=False, sep='|', escapechar='\\', quoting=csv.QUOTE_NONE, index=False)
