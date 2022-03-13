@@ -10,6 +10,13 @@ from week4.opensearch import get_opensearch
 import week4.utilities.query_utils as qu
 import week4.utilities.ltr_utils as lu
 
+import nltk
+import string
+from nltk import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+from nltk import pos_tag
+
 bp = Blueprint('search', __name__, url_prefix='/search')
 
 
@@ -57,8 +64,30 @@ def process_filters(filters_input):
     return filters, display_filters, applied_filters
 
 def get_query_category(user_query, query_class_model):
-    print("IMPLEMENT ME: get_query_category")
-    return None
+    user_query = preprocess_text(user_query)
+    print("Preprocessed user query: {}".format(user_query))
+    if not user_query:
+        return None
+
+    results = query_class_model.predict(user_query, k=5, threshold=0.0)
+    cat_ids = [id.replace("__label__","") for id in results[0]]
+    zipped_results = list(zip(cat_ids, results[1]))
+    print("fastText classifier output: {}".format(zipped_results))
+    return zipped_results
+
+
+def preprocess_text(query):
+    query = query.lower()
+    query = query.translate(str.maketrans('', '', string.punctuation))
+    
+    words = word_tokenize(query)
+    stop_words = stopwords.words('english')
+    stop_words = set(stop_words)
+    filtered_words = [word for word in words if word not in stop_words]
+    
+    stemmer = SnowballStemmer("english")
+    stemmed = [stemmer.stem(word) for word in filtered_words]
+    return " ".join(stemmed)
 
 
 @bp.route('/query', methods=['GET', 'POST'])
@@ -109,7 +138,7 @@ def query():
             print("Hand tuned q: %s" % query_obj)
         else:
             query_obj = qu.create_simple_baseline(user_query, click_prior, [], sort, sortDir, size=100)  # We moved create_query to a utility class so we could use it elsewhere.
-            print("Plain ol q: %s" % query_obj)
+            # print("Plain ol q: %s" % query_obj)
     elif request.method == 'GET':  # Handle the case where there is no query or just loading the page
         user_query = request.args.get("query", "*")
         filters_input = request.args.getlist("filter.name")
@@ -137,9 +166,30 @@ def query():
 
     query_class_model = current_app.config["query_model"]
     query_category = get_query_category(user_query, query_class_model)
-    if query_category is not None:
-        print("IMPLEMENT ME: add this into the filters object so that it gets applied at search time.  This should look like your `term` filter from week 1 for department but for categories instead")
-    #print("query obj: {}".format(query_obj))
+    if query_category is not None and query_category:
+        #filter regardless of score, add all category ids to terms filter for field categoryPathIds.keyword
+        filter_terms = {
+            "terms": {
+                "categoryPathIds.keyword": [category[0] for category in query_category]
+            }
+        }
+        query_obj['query']['bool']['filter'].append(filter_terms)
+
+        #boost if score is gte 0.6, add category id to term query for field categoryLeaf.keyword under should clause
+        #since rollup is performed it might be possible that predicted categories will never be present in categoryLeaf field (will be present in categoryPathIds)
+        for category, score in query_category:
+            if score >= 0.6:
+                should_term = {
+                    "term": {
+                        "categoryLeaf.keyword": {
+                        "value": category,
+                        "boost": 50
+                        }
+                    }
+                }
+                query_obj['query']['bool']['should'].append(should_term)
+
+    print("query obj: {}".format(query_obj))
     response = opensearch.search(body=query_obj, index=current_app.config["index_name"], explain=explain)
     # Postprocess results here if you so desire
 
