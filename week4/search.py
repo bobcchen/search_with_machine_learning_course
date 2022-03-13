@@ -66,8 +66,12 @@ def process_filters(filters_input):
 def get_query_category(user_query, query_class_model):
     user_query = preprocess_text(user_query)
     print("Preprocessed user query: {}".format(user_query))
+    if not user_query:
+        return None
+
     results = query_class_model.predict(user_query, k=5, threshold=0.0)
-    zipped_results = list(zip(results[0], results[1]))
+    cat_ids = [id.replace("__label__","") for id in results[0]]
+    zipped_results = list(zip(cat_ids, results[1]))
     print("fastText classifier output: {}".format(zipped_results))
     return zipped_results
 
@@ -162,8 +166,29 @@ def query():
 
     query_class_model = current_app.config["query_model"]
     query_category = get_query_category(user_query, query_class_model)
-    if query_category is not None:
-        print("IMPLEMENT ME: add this into the filters object so that it gets applied at search time.  This should look like your `term` filter from week 1 for department but for categories instead")
+    if query_category is not None and query_category:
+        #filter regardless of score, add all category ids to terms filter for field categoryPathIds.keyword
+        filter_terms = {
+            "terms": {
+                "categoryPathIds.keyword": [category[0] for category in query_category]
+            }
+        }
+        query_obj['query']['bool']['filter'].append(filter_terms)
+
+        #boost if score is gte 0.6, add category id to term query for field categoryLeaf.keyword under should clause
+        #since rollup is performed it might be possible that predicted categories will never be present in categoryLeaf field (will be present in categoryPathIds)
+        for category, score in query_category:
+            if score >= 0.6:
+                should_term = {
+                    "term": {
+                        "categoryLeaf.keyword": {
+                        "value": category,
+                        "boost": 50
+                        }
+                    }
+                }
+                query_obj['query']['bool']['should'].append(should_term)
+
     print("query obj: {}".format(query_obj))
     response = opensearch.search(body=query_obj, index=current_app.config["index_name"], explain=explain)
     # Postprocess results here if you so desire
